@@ -1,0 +1,161 @@
+PSEUDOCÓDIGO (parecido com Python) - MIDDLEWARE DE LOG
+Este arquivo é só para estudar o conceito. Não é para ser executado.
+
+Arquivo onde o código real vai:   app/middleware/request_logging.py
+Arquivo onde ele é registrado:    app/main.py
+
+
+# ------------------------------------------------------------
+# 0) O QUE É UM MIDDLEWARE
+# ------------------------------------------------------------
+
+# É uma função que roda EM VOLTA de todo pedido:
+#
+#   pedido chega
+#       |
+#       v
+#   [ MIDDLEWARE: antes ]      <- anota a hora, por exemplo
+#       |
+#       v
+#   dependências (token) -> rota
+#       |
+#       v
+#   [ MIDDLEWARE: depois ]     <- calcula a duração e registra
+#       |
+#       v
+#   resposta sai para o cliente
+#
+# Diferença para uma dependência (Depends):
+#   - dependência: roda só nas rotas em que você declara
+#   - middleware: roda em TUDO, inclusive em 404 e em 401
+
+
+# ------------------------------------------------------------
+# 1) ARQUIVO app/middleware/request_logging.py
+# ------------------------------------------------------------
+
+importar time                      # para medir a duração
+importar Request (do fastapi)      # o tipo do pedido que chega
+
+
+# a função precisa ser "async" e receber dois argumentos:
+#   request   -> o pedido que chegou (método, rota, headers...)
+#   call_next -> uma função que "deixa o pedido seguir" até a rota
+
+async def registrar_requisicao(request, call_next):
+
+    # PASSO 1: anotar a hora de início (ANTES de deixar o pedido seguir)
+    inicio = time.perf_counter()
+
+    # PASSO 2: deixar o pedido seguir e esperar a resposta
+    # aqui dentro roda a verificação do token e a rota
+    response = await call_next(request)
+
+    # PASSO 3: calcular quanto tempo demorou
+    duracao_ms = (time.perf_counter() - inicio) * 1000
+
+    # PASSO 4: registrar o que aconteceu
+    # request.method       -> "GET", "POST", ...
+    # request.url.path     -> "/clientes"
+    # response.status_code -> 200, 401, 404, ...
+    imprimir(f"{request.method} {request.url.path} -> {response.status_code} ({duracao_ms:.1f} ms)")
+
+    # PASSO 5: devolver a resposta
+    # SEM ESTA LINHA O PEDIDO TRAVA: o cliente nunca recebe nada
+    retornar response
+
+
+# ------------------------------------------------------------
+# 2) REGISTRAR NO app/main.py
+#    Só escrever a função não basta: o app precisa saber que ela existe.
+# ------------------------------------------------------------
+
+importar registrar_requisicao (de app.middleware.request_logging)
+
+app = FastAPI(dependencies=[Depends(verificar_token)])
+
+# "http" significa: rodar em todo pedido HTTP
+app.middleware("http")(registrar_requisicao)
+
+app.include_router(clientes.router)
+
+
+# ------------------------------------------------------------
+# 3) O QUE APARECE NO TERMINAL
+# ------------------------------------------------------------
+
+# GET /clientes  (sem token)          -> GET /clientes -> 401 (1.2 ms)
+# GET /clientes  (token certo)        -> GET /clientes -> 200 (2.8 ms)
+# POST /clientes (token certo)        -> POST /clientes -> 201 (3.1 ms)
+# GET /clientes/99                    -> GET /clientes/99 -> 404 (2.0 ms)
+#
+# Repare que o 401 também é registrado: o middleware enxerga o pedido
+# mesmo quando a rota nem chegou a rodar.
+
+
+# ------------------------------------------------------------
+# 4) VERSÃO MELHOR: usar o módulo "logging" do Python
+#    (no lugar do print)
+# ------------------------------------------------------------
+
+# O módulo logging tem NÍVEIS e pode escrever em arquivo.
+#
+#   INFO     -> registro normal
+#   WARNING  -> algo estranho, mas não quebrou
+#   ERROR    -> falhou
+#
+# No topo do arquivo:
+importar logging
+logger = logging.getLogger("uvicorn.error")     # reaproveita o formato do uvicorn
+
+# no PASSO 4, troque o imprimir(...) por:
+logger.info(f"{request.method} {request.url.path} -> {response.status_code} ({duracao_ms:.1f} ms)")
+
+# Ideia extra: escolher o nível pelo código de resposta
+#   se response.status_code >= 500:  logger.error(...)
+#   senão se response.status_code >= 400:  logger.warning(...)
+#   senão:  logger.info(...)
+
+
+# ------------------------------------------------------------
+# 5) CUIDADO COM O NOME DO ARQUIVO
+# ------------------------------------------------------------
+
+# Por isso o arquivo se chama request_logging.py e NÃO logging.py:
+# "logging" já é o nome de um módulo que vem com o Python.
+# Dar o mesmo nome ao seu arquivo pode fazer o "import logging"
+# pegar o arquivo errado, e o erro fica muito confuso.
+
+
+# ------------------------------------------------------------
+# 6) DICAS EXTRAS
+# ------------------------------------------------------------
+
+# - NUNCA registre o header Authorization nem o corpo do pedido:
+#   o token e dados pessoais (cpf, telefone) não devem ir para o log.
+#
+# - Ideias do que mais registrar depois:
+#     request.client.host     -> de qual IP veio o pedido
+#     request.headers.get("user-agent")  -> qual programa fez o pedido
+#
+# - Se houver VÁRIOS middlewares, a ordem de registro importa:
+#   o último registrado é o primeiro a receber o pedido.
+#
+# - O middleware NÃO recebe as variáveis da rota (como o {id}) já prontas,
+#   só o caminho completo. Para isso, use uma dependência.
+
+
+# ------------------------------------------------------------
+# 7) COMO TESTAR
+# ------------------------------------------------------------
+
+# 1. Suba o servidor, da RAIZ do projeto:
+#       uvicorn app.main:app --reload
+#
+# 2. Faça pedidos e olhe o terminal:
+curl.exe -i http://127.0.0.1:8000/clientes                                        # esperado no log: 401
+curl.exe -i -H "Authorization: Bearer meu-token" http://127.0.0.1:8000/clientes   # esperado no log: 200
+curl.exe -i http://127.0.0.1:8000/nao-existe                                      # esperado no log: 401 ou 404
+#
+# 3. Confirme que a sua linha aparece no terminal para CADA pedido.
+#    Se não aparecer nada, o middleware não foi registrado no main.py.

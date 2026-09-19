@@ -1,0 +1,106 @@
+PSEUDOCÓDIGO (parecido com Python) - AUTENTICAÇÃO COM BEARER TOKEN
+Este arquivo é só para estudar o conceito. Não é para ser executado.
+
+
+# ------------------------------------------------------------
+# 1) TOPO DO ARQUIVO: importar o que falta e guardar o token
+# ------------------------------------------------------------
+
+importar Header, Depends (do fastapi)
+
+TOKEN = "meu-token"      # token esperado (em projeto real vai em variável de ambiente)
+
+
+# ------------------------------------------------------------
+# 2) A FUNÇÃO QUE VERIFICA (escrita UMA vez só)
+#    Ela segue exatamente o fluxograma:
+#    tem Authorization? -> tem Bearer? -> token válido?
+# ------------------------------------------------------------
+
+def verificar_token(authorization = Header(padrão=None)):
+
+    # o FastAPI pega o header "Authorization" e entrega aqui.
+    # Se o cliente não mandou nada, authorization vale None.
+
+    # PERGUNTA 1: tem Authorization?
+    se authorization for None:
+        levantar erro 401 com mensagem "Authorization ausente"
+
+    # PERGUNTA 2: tem Bearer?
+    # o valor chega como texto único, por exemplo: "Bearer meu-token"
+    se authorization NÃO começar com "Bearer ":
+        levantar erro 401 com mensagem "Formato inválido, use Bearer"
+
+    # separar o token do resto do texto
+    # "Bearer meu-token"  ->  "meu-token"
+    token_recebido = authorization sem os 7 primeiros caracteres ("Bearer ")
+
+    # PERGUNTA 3: token é válido?
+    se token_recebido for diferente de TOKEN:
+        levantar erro 401 com mensagem "Token inválido"
+
+    # se chegou até aqui, passou nas 3 perguntas.
+    # não retorna nada e não levanta erro: o FastAPI deixa a rota rodar.
+
+
+# ------------------------------------------------------------
+# 3) USAR NAS ROTAS
+# ------------------------------------------------------------
+
+# OPÇÃO A: proteger uma rota por vez
+@app.get("/clientes", dependencies=[Depends(verificar_token)])
+def listar_clientes(...):
+    ...o código que você já tem, sem mudar nada...
+
+
+# OPÇÃO B: proteger TODAS as rotas de uma vez
+# (troca a linha "app = FastAPI()" do topo por esta)
+app = FastAPI(dependencies=[Depends(verificar_token)])
+
+
+# ------------------------------------------------------------
+# 4) O QUE ACONTECE QUANDO CHEGA UM PEDIDO
+# ------------------------------------------------------------
+
+# pedido chega em GET /clientes
+#         |
+#         v
+# FastAPI roda verificar_token ANTES da rota
+#         |
+#         +-- sem header ............ 401  (a rota nem executa)
+#         +-- sem "Bearer " ......... 401  (a rota nem executa)
+#         +-- token errado .......... 401  (a rota nem executa)
+#         +-- token certo ........... segue para listar_clientes -> 200
+
+
+# ------------------------------------------------------------
+# 5) COMO TESTAR (no PowerShell, com o servidor rodando)
+#    Use "curl.exe" com .exe, senão o PowerShell usa outro comando.
+#    O -i mostra o código de resposta.
+# ------------------------------------------------------------
+
+# Teste 1: sem header                -> esperado: 401
+curl.exe -i http://127.0.0.1:8000/clientes
+
+# Teste 2: token errado              -> esperado: 401
+curl.exe -i -H "Authorization: Bearer errado" http://127.0.0.1:8000/clientes
+
+# Teste 3: token certo               -> esperado: 200
+curl.exe -i -H "Authorization: Bearer meu-token" http://127.0.0.1:8000/clientes
+
+
+# ------------------------------------------------------------
+# 6) DICAS EXTRAS
+# ------------------------------------------------------------
+
+# - No 401, o certo é mandar também o header  WWW-Authenticate: Bearer
+#   (no HTTPException, é o parâmetro  headers={"WWW-Authenticate": "Bearer"})
+#
+# - 401 = "não sei quem é você"     403 = "sei quem é, mas não pode"
+#
+# - Se quiser testar pelo Swagger (/docs) com botão "Authorize",
+#   troque o Header por HTTPBearer (também vem no fastapi):
+#       from fastapi.security import HTTPBearer
+#       seguranca = HTTPBearer()
+#   e use  Depends(seguranca)  no lugar de ler o Header na mão.
+#   Nesse caso o token já chega separado, sem o "Bearer ".
